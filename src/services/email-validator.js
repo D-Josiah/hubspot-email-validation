@@ -1,15 +1,8 @@
-const fs = require('fs-extra');
-const path = require('path');
-const csvParser = require('csv-parser');
-const { createObjectCsvWriter } = require('csv-writer');
+const { kv } = require('@vercel/kv');
 
 class EmailValidationService {
   constructor(config) {
     this.config = config;
-    
-    // Set up paths for CSV storage
-    this.knownValidEmailsPath = path.join(process.cwd(), 'data', 'known_valid_emails.csv');
-    this.validationResultsPath = path.join(process.cwd(), 'data', 'validation_results.csv');
     
     // Common email domain typos
     this.domainTypos = {
@@ -28,103 +21,49 @@ class EmailValidationService {
     
     this.australianTlds = ['.com.au', '.net.au', '.org.au', '.edu.au', '.gov.au', '.asn.au', '.id.au', '.au'];
     this.commonValidDomains = ['gmail.com', 'outlook.com', 'hotmail.com', 'yahoo.com', 'icloud.com', 'aol.com'];
-    
-    // Initialize CSV files if they don't exist
-    this.initializeStorage();
   }
   
-  // Initialize CSV storage
-  async initializeStorage() {
-    const dataDir = path.join(process.cwd(), 'data');
-    
-    // Create data directory if it doesn't exist
-    await fs.ensureDir(dataDir);
-    
-    // Create known valid emails CSV if it doesn't exist
-    if (!await fs.pathExists(this.knownValidEmailsPath)) {
-      const csvWriter = createObjectCsvWriter({
-        path: this.knownValidEmailsPath,
-        header: [
-          { id: 'email', title: 'EMAIL' },
-          { id: 'validatedAt', title: 'VALIDATED_AT' },
-          { id: 'source', title: 'SOURCE' }
-        ]
-      });
-      
-      await csvWriter.writeRecords([]);
-    }
-    
-    // Create validation results CSV if it doesn't exist
-    if (!await fs.pathExists(this.validationResultsPath)) {
-      const csvWriter = createObjectCsvWriter({
-        path: this.validationResultsPath,
-        header: [
-          { id: 'originalEmail', title: 'ORIGINAL_EMAIL' },
-          { id: 'correctedEmail', title: 'CORRECTED_EMAIL' },
-          { id: 'status', title: 'STATUS' },
-          { id: 'validatedAt', title: 'VALIDATED_AT' },
-          { id: 'recheckNeeded', title: 'RECHECK_NEEDED' },
-          { id: 'source', title: 'SOURCE' }
-        ]
-      });
-      
-      await csvWriter.writeRecords([]);
-    }
-  }
-  
-  // Add email to known valid emails CSV
+  // Add email to KV store
   async addToKnownValidEmails(email) {
     try {
-      const record = {
-        email: email.toLowerCase(),
+      const key = `email:${email}`;
+      const data = {
         validatedAt: new Date().toISOString(),
         source: 'validation-service'
       };
       
-      const csvWriter = createObjectCsvWriter({
-        path: this.knownValidEmailsPath,
-        header: [
-          { id: 'email', title: 'EMAIL' },
-          { id: 'validatedAt', title: 'VALIDATED_AT' },
-          { id: 'source', title: 'SOURCE' }
-        ],
-        append: true
-      });
+      await kv.set(key, JSON.stringify(data));
       
-      await csvWriter.writeRecords([record]);
+      // Set expiration to 30 days (in seconds)
+      await kv.expire(key, 30 * 24 * 60 * 60);
+      
       return true;
     } catch (error) {
-      console.error('Error storing email in CSV:', error);
+      console.error('Error storing email in KV:', error);
       return false;
     }
   }
   
-  // Save validation result to CSV
+  // Save validation result to KV
   async saveValidationResult(validationResult) {
     try {
+      const timestamp = new Date().getTime();
+      const key = `validation:${validationResult.originalEmail}:${timestamp}`;
+      
       const record = {
         originalEmail: validationResult.originalEmail,
         correctedEmail: validationResult.currentEmail,
         status: validationResult.status,
         validatedAt: new Date().toISOString(),
-        recheckNeeded: validationResult.recheckNeeded.toString(),
+        recheckNeeded: validationResult.recheckNeeded,
         source: 'hubspot-webhook'
       };
       
-      const csvWriter = createObjectCsvWriter({
-        path: this.validationResultsPath,
-        header: [
-          { id: 'originalEmail', title: 'ORIGINAL_EMAIL' },
-          { id: 'correctedEmail', title: 'CORRECTED_EMAIL' },
-          { id: 'status', title: 'STATUS' },
-          { id: 'validatedAt', title: 'VALIDATED_AT' },
-          { id: 'recheckNeeded', title: 'RECHECK_NEEDED' },
-          { id: 'source', title: 'SOURCE' }
-        ],
-        append: true
-      });
+      await kv.set(key, JSON.stringify(record));
       
-      await csvWriter.writeRecords([record]);
+      // Set expiration to 90 days
+      await kv.expire(key, 90 * 24 * 60 * 60);
+      
       return true;
     } catch (error) {
       console.error('Error saving validation result:', error);
@@ -132,28 +71,14 @@ class EmailValidationService {
     }
   }
   
-  // Check if email exists in known valid emails CSV
+  // Check if email exists in KV store
   async isKnownValidEmail(email) {
     try {
-      const lowerEmail = email.toLowerCase();
-      const knownEmails = [];
-      
-      return new Promise((resolve, reject) => {
-        fs.createReadStream(this.knownValidEmailsPath)
-          .pipe(csvParser())
-          .on('data', (row) => {
-            knownEmails.push(row.EMAIL.toLowerCase());
-          })
-          .on('end', () => {
-            resolve(knownEmails.includes(lowerEmail));
-          })
-          .on('error', (error) => {
-            console.error('Error reading known emails CSV:', error);
-            resolve(false);
-          });
-      });
+      const key = `email:${email}`;
+      const result = await kv.get(key);
+      return !!result;
     } catch (error) {
-      console.error('Error checking CSV for email:', error);
+      console.error('Error checking KV for email:', error);
       return false;
     }
   }
@@ -291,7 +216,7 @@ class EmailValidationService {
       await this.addToKnownValidEmails(correctedEmail);
     }
     
-    // Save the validation result to CSV
+    // Save the validation result to KV
     await this.saveValidationResult(result);
     
     return result;
@@ -317,6 +242,54 @@ class EmailValidationService {
     }
     
     return results;
+  }
+  
+  // Update HubSpot contact (if needed)
+  async updateHubSpotContact(contactId, validationResult, hubspotClient) {
+    try {
+      if (!hubspotClient) {
+        return {
+          success: false,
+          contactId,
+          error: 'HubSpot client not provided'
+        };
+      }
+      
+      const properties = {
+        email: validationResult.currentEmail,
+        email_status: validationResult.status,
+        email_recheck_needed: validationResult.recheckNeeded,
+        email_check_date: new Date().toISOString(),
+      };
+      
+      if (validationResult.wasCorrected) {
+        properties.original_email = validationResult.originalEmail;
+        properties.email_corrected = true;
+      }
+      
+      if (validationResult.subStatus) {
+        properties.email_sub_status = validationResult.subStatus;
+      }
+      
+      const response = await hubspotClient.crm.contacts.basicApi.update(
+        contactId,
+        { properties }
+      );
+      
+      return {
+        success: true,
+        contactId,
+        response
+      };
+      
+    } catch (error) {
+      console.error(`Error updating HubSpot contact ${contactId}:`, error);
+      return {
+        success: false,
+        contactId,
+        error: error.message
+      };
+    }
   }
 }
 

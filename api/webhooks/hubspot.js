@@ -1,7 +1,7 @@
 const EmailValidationService = require('../../src/services/email-validator');
 const crypto = require('crypto');
 
-// Load configuration with environment variables
+// Load configuration
 const config = {
   environment: process.env.NODE_ENV || 'development',
   emailValidation: {
@@ -41,7 +41,7 @@ module.exports = async (req, res) => {
     console.error('Error in webhook handler:', error);
     // Already sent 200 response or failed verification, so no need to respond again
   }
-}
+};
 
 // Verify the HubSpot signature
 function verifyHubspotSignature(req, config) {
@@ -108,6 +108,13 @@ async function processWebhook(webhookData, config) {
     
     // Validate the email
     const validationResult = await emailValidator.validateEmail(email);
+    
+    // Log the result
+    console.log(`Validated email ${email}`, {
+      contactId,
+      result: validationResult.status,
+      corrected: validationResult.wasCorrected ? validationResult.currentEmail : null
+    });
     
     return {
       success: true,

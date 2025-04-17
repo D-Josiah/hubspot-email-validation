@@ -1,8 +1,25 @@
 const express = require('express');
 const cors = require('cors');
-const webhookRoutes = require('./src/routes/webhooks');
-const config = require('./src/config');
 const EmailValidationService = require('./src/services/email-validator');
+require('dotenv').config();
+
+// Configuration
+const config = {
+  port: process.env.PORT || 3000,
+  environment: process.env.NODE_ENV || 'development',
+  
+  // Email validation settings
+  emailValidation: {
+    removeGmailAliases: process.env.REMOVE_GMAIL_ALIASES !== 'false',
+    checkAustralianTlds: process.env.CHECK_AUSTRALIAN_TLDS !== 'false',
+  },
+  
+  // HubSpot settings
+  hubspot: {
+    clientSecret: process.env.HUBSPOT_CLIENT_SECRET || '',
+    skipSignatureVerification: process.env.SKIP_SIGNATURE_VERIFICATION === 'true'
+  }
+};
 
 // Initialize the app
 const app = express();
@@ -14,11 +31,19 @@ app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
 // Routes
-app.use('/api/webhooks', webhookRoutes);
+app.post('/api/webhooks/hubspot', async (req, res) => {
+  // Import the webhook handler
+  const webhookHandler = require('./api/webhooks/hubspot');
+  return await webhookHandler(req, res);
+});
 
 // Health check endpoint
 app.get('/api/health', (req, res) => {
-  res.status(200).json({ status: 'OK', timestamp: new Date().toISOString() });
+  res.status(200).json({ 
+    status: 'OK', 
+    timestamp: new Date().toISOString(), 
+    environment: config.environment 
+  });
 });
 
 // Email validation endpoint
